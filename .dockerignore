@@ -1,0 +1,6 @@
+# 只需要 go.mod / go.sum / *.go / go:embed 的自检文件
+*
+!go.mod
+!go.sum
+!*.go
+!selftest_attrib.dxf

@@ -1,0 +1,4 @@
+output/
+.env
+java-client/target/
+cad-work/

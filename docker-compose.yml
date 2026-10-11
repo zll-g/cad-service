@@ -1,0 +1,65 @@
+# 一键启动：
+#   docker compose up -d --build cad-service           # 只启动解析服务
+#   docker compose --profile demo up --build           # 再跑一次 Java 演示（HTTP 模式），结果在 ./output/
+#   docker compose --profile demo run --rm cad-demo-cli  # CLI 模式演示（不经过 cad-service）
+#
+# 只需要能访问 Docker Hub（不依赖 gcr.io）。网络受限时：cp .env.example .env，打开里面的镜像源配置
+
+services:
+  cad-service:
+    build:
+      context: ./cad-service
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn|https://proxy.golang.org|direct}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
+        WITH_CJK_FONT: ${WITH_CJK_FONT:-true}
+    image: ${REGISTRY:-local}/cad-service:${TAG:-latest}
+    container_name: cad-service
+    ports:
+      - "8090:8090"
+    environment:
+      CAD_MAX_UPLOAD_MB: "200"
+      CAD_MAX_CONCURRENCY: "4"   # 同时解析的文件数；大图纸渲染很耗内存，按内存估算
+      CAD_QUEUE_TIMEOUT: "120"
+      GOMEMLIMIT: "1800MiB"      # ≈ 内存上限的 90%，让 GC 在 OOM 之前更积极地回收
+      CAD_SHUTDOWN_GRACE: "60"   # 收到 SIGTERM 后等待进行中请求的秒数
+    stop_grace_period: 70s       # 必须大于 CAD_SHUTDOWN_GRACE（docker stop 默认只等 10 秒）
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "4"
+    restart: unless-stopped
+    read_only: true              # 根文件系统只读
+    tmpfs:
+      - /tmp:size=512m           # 但 /tmp 必须可写：Go 解析 multipart 时，超过 32MB 的上传会暂存到 /tmp
+    security_opt:
+      - no-new-privileges:true
+    # 健康检查已经写在 Dockerfile 的 HEALTHCHECK 里
+
+  # ---- Java 演示：HTTP 模式 ----
+  cad-demo:
+    profiles: ["demo"]
+    build:
+      context: ./java-client
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn|https://proxy.golang.org|direct}
+        MAVEN_MIRROR: ${MAVEN_MIRROR:-}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
+    image: ${REGISTRY:-local}/cad-rag-client:${TAG:-latest}
+    depends_on:
+      cad-service:
+        condition: service_healthy
+    volumes:
+      - ./samples:/data:ro
+      - ./output:/out
+    command: ["http", "http://cad-service:8090", "/out/chunks_http.jsonl", "/data/fire_weak_current_sample.dxf"]
+
+  # ---- Java 演示：CLI 模式（镜像内置 caddocling，不依赖 cad-service） ----
+  cad-demo-cli:
+    profiles: ["demo"]
+    image: ${REGISTRY:-local}/cad-rag-client:${TAG:-latest}
+    volumes:
+      - ./samples:/data:ro
+      - ./output:/out
+    command: ["cli", "/usr/local/bin/caddocling", "/out/chunks_cli.jsonl", "/data/fire_weak_current_sample.dxf"]
